@@ -1,4 +1,3 @@
-import os
 import cv2
 import numpy as np
 
@@ -17,7 +16,7 @@ class LabelStat():
         self.select(0)
 
     def select(self,y):
-        idx=y/self.h
+        idx=int(y/self.h)
         cv2.rectangle(self.label_im, (0, self.label * self.h), (self.w, (self.label + 1) * self.h),
                       (100, 100, 100), 3)
         self.label = idx
@@ -36,20 +35,27 @@ class LabelStat():
 
 class VideoStat():
     def __init__(self,border=30):
+        self.track = True
         self.is_drug=False
         self.boxes=[]
         self.trackers=[]
         self.colors=[]
         self.labels=[]
+        self.mouse_coords=(0,0)
         self.p0=(0,0)
         self.p1=(0,0)
+        self.bboxParam = 10.0
+        self.aspect_ratio = 1.0
         self.p=(0,0) # the mouse pointer's current position
         self.video_im=np.ones([320,320,3],np.uint8)
+        self.raw_video_im=np.ones([320,320,3],np.uint8)
         self.border=border
         self.frame_id=0
+        cv2.createTrackbar('Bbox size', 'video', 10, 100, self.changeParam)
 
     def update_im(self,im):
         self.video_im = im.copy()
+        self.raw_video_im = im.copy()
         cv2.rectangle(self.video_im,
                       (self.border,self.border),(self.video_im.shape[1]-self.border,self.video_im.shape[0]-self.border),
                       (255,255,255))
@@ -58,26 +64,40 @@ class VideoStat():
             cv2.putText(self.video_im,self.labels[i],box[0],cv2.FONT_HERSHEY_SIMPLEX,1,(255,255,255),2)
         cv2.imshow("video", self.video_im)
 
+    def redraw(self):
+        self.video_im = self.raw_video_im.copy()
+        for i, box in enumerate(self.boxes):
+            cv2.rectangle(self.video_im, box[0], box[1], self.colors[i])
+            cv2.putText(self.video_im, self.labels[i], box[0], cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        cv2.imshow("video", self.video_im)
+
     def update_box(self):
         border=self.border
         remove_list=[]
-        for i,tracker in enumerate(self.trackers):
-            p0,p1=tracker.track(self.video_im)
-            if              self.video_im.shape[0] - border > p0[1] > 0 + border and \
-                            self.video_im.shape[0] - border > p1[1] > 0 + border and \
-                            self.video_im.shape[1] - border > p0[0] > 0 + border and \
-                            self.video_im.shape[1] - border > p1[0] > 0 + border:
-                self.boxes[i]=[p0,p1]
-            else:
-                remove_list.append(i)
-        map(self.remove_box, remove_list)
+        if self.track:
+            for i,tracker in enumerate(self.trackers):
+                p0,p1=tracker.track(self.video_im)
+                if              self.video_im.shape[0] - border > p0[1] > 0 + border and \
+                                self.video_im.shape[0] - border > p1[1] > 0 + border and \
+                                self.video_im.shape[1] - border > p0[0] > 0 + border and \
+                                self.video_im.shape[1] - border > p1[0] > 0 + border:
+
+                    self.changeBboxSize(i, p0, p1, self.video_im)
+                    # self.boxes[i]=[p0,p1]
+                else:
+                    remove_list.append(i)
+            map(self.remove_box, remove_list)
+        else:
+            p0 = (int(self.mouse_coords[0]-self.bboxParam*self.aspect_ratio*self.video_im.shape[1]/100), int(self.mouse_coords[1]-self.bboxParam*self.video_im.shape[0]/100))
+            self.boxes[0]=[p0,self.mouse_coords]
+            map(self.remove_box, remove_list)
+
 
     def remove_point_box(self,p):
         # remove the boxes in that point
-        print p
         for idx,box in enumerate(self.boxes):
             p0,p1=box
-            if p1[0]>p[0]>p0[0] and p1[1]>p[1]>p0[1]:
+            if p1[0]>=p[0]>=p0[0] and p1[1]>=p[1]>=p0[1]:
                 self.remove_box(idx)
 
     def update(self,im):
@@ -93,7 +113,7 @@ class VideoStat():
         cv2.imshow("video", self.video_im)
 
     def remove_box(self, idx):
-        print "remove box", self.boxes[idx]
+        print("remove box", self.boxes[idx])
         del self.boxes[idx]
         del self.colors[idx]
         del self.trackers[idx]
@@ -113,9 +133,21 @@ class VideoStat():
     def get_boxes(self):
         return zip(self.boxes,self.labels)
 
+    def changeParam(self, par):
+        self.bboxParam = par
+
+    def changeBboxSize(self, i, p0, p1, im):
+        deltaWidth = abs(p0[0]-p1[0])*self.bboxParam*5
+        deltaHeigth = abs(p0[1]-p1[1])*self.bboxParam
+        p0 = (max(min(int(p0[0] - deltaWidth), im.shape[1]), 0), max(min(int(p0[1] - deltaHeigth), im.shape[0]), 0))
+        p1 = (max(min(int(p1[0] + deltaWidth), im.shape[1]), 0), max(min(int(p1[1] + deltaHeigth), im.shape[0]), 0))
+        self.boxes[i] = [p0, p1]
+
 cv2.namedWindow("video")
 cv2.namedWindow("label")
+
 # cv2.namedWindow("show")
+
 
 class GUILabeler():
     def __init__(self,labels,video_file,box_saver,border=30):
@@ -132,26 +164,59 @@ class GUILabeler():
         self.label_stat = LabelStat(labels)
         self.labels=labels
         self.box_saver=box_saver
+        self.save_as_video = False
         cv2.setMouseCallback("video", self.video_click)
         cv2.setMouseCallback("label", self.label_click)
         self.run()
 
     def run(self):
-        stop = False
-        _, im = self.cam.read()
-        while 1:
+        stop = True
+        track = True
+        one = False
+        im = self.cam.read()
+        idx = 0
+        while self.cam.isOpened():
             if not self.video_stat.is_drug and not stop:
                 _, im = self.cam.read()
+                _, im = self.cam.read()
+                # if idx % 2 == 0:
+                if one:
+                    stop = True
+                    one = False
                 self.video_stat.update(im)
-                self.box_saver.save(im,self.video_stat.frame_id,self.video_stat.get_boxes())
             else:
                 if self.video_stat.is_drug:
                     self.video_stat.draw_update(im, self.label_stat.get_label_name())
-            chr=cv2.waitKey(1) & 0xFF
-            if chr==ord(' '): # press space to stop the frame
+
+
+            chr = cv2.waitKey(1) & 0xFF
+            if chr == ord(' '):  # press space to stop the frame
                 stop= not stop
-            if chr==27: # Esc key to exit
+            if chr == ord('n'):  # n key to step
+                stop = False
+                one = True
+                self.box_saver.save(im, self.video_stat.frame_id, self.video_stat.get_boxes())
+            if chr == ord('t'):
+                self.video_stat.track = not self.video_stat.track
+            if chr == ord('v'):
+                self.box_saver.save_as_video = not self.box_saver.save_as_video
+                print("Save as video: ", self.box_saver.save_as_video)
+            if chr == ord('a'):
+                self.video_stat.bboxParam += 0.2
+                self.video_stat.update_box()
+            if chr == ord('z'):
+                self.video_stat.bboxParam -= 0.2
+                self.video_stat.update_box()
+            if chr == ord('s'):
+                self.video_stat.aspect_ratio += 0.08
+                self.video_stat.update_box()
+            if chr == ord('x'):
+                self.video_stat.aspect_ratio -= 0.08
+                self.video_stat.update_box()
+            if chr == 27:  # Esc key to exit
+                self.box_saver.release_video_file()
                 break
+            idx += 1
 
 
     def video_click(self,e, x, y, flags, param):
@@ -164,9 +229,14 @@ class GUILabeler():
             self.video_stat.p1 = (x, y)
             print("rect end", x, y)
             self.video_stat.append_box(self.label_stat.get_label_name())
-        elif e== cv2.EVENT_RBUTTONDOWN:
+        elif e == cv2.EVENT_RBUTTONDOWN:
             self.video_stat.remove_point_box((x,y))
+        elif e == cv2.EVENT_MOUSEMOVE:
+            self.video_stat.mouse_coords = (x,y)
+            self.video_stat.update_box()
+            self.video_stat.redraw()
         self.video_stat.p=(x,y)
+
 
     def label_click(self,e, x, y, flags, param):
         if e == cv2.EVENT_LBUTTONDOWN:
